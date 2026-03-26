@@ -1,3 +1,7 @@
+"""
+Main training and evaluation script for information diffusion prediction.
+This script handles data loading, model training, validation and testing.
+"""
 import datetime
 import Constants
 from tqdm import tqdm
@@ -11,12 +15,18 @@ from utils.Metrics import Metrics
 from utils.EarlyStopping import *
 from utils.graphConstruct import ConRelationGraph, ConHypergraph
 
-
+# Initialize evaluation metrics and parse command line arguments
 metric = Metrics()
-opt = parser.parse_args() 
+opt = parser.parse_args()
 torch.cuda.empty_cache()
 
 def init_seeds(seed=2025):
+    """
+    Initialize random seeds for reproducibility across all devices.
+    
+    Args:
+        seed (int): Random seed value, defaults to 2025.
+    """
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -24,6 +34,19 @@ def init_seeds(seed=2025):
     torch.backends.cudnn.deterministic = True
 
 def get_performance(crit, pred, gold):
+    """
+    Calculate loss and prediction accuracy ignoring padding tokens.
+    
+    Args:
+        crit (nn.CrossEntropyLoss): Loss function criterion.
+        pred (torch.Tensor): Model predictions of shape [batch*seq_len, num_users].
+        gold (torch.Tensor): Ground truth labels of shape [batch, seq_len].
+    
+    Returns:
+        tuple: (loss, n_correct) where:
+            - loss (torch.Tensor): Scalar loss value.
+            - n_correct (float): Number of correct predictions excluding padding.
+    """
     loss = crit(pred, gold.contiguous().view(-1))
 
     pred = pred.max(1)[1]
@@ -33,18 +56,29 @@ def get_performance(crit, pred, gold):
     return loss, n_correct
 
 def model_training(model, train_loader, epoch, writer=None):
-    ''' model training '''
-    torch.autograd.set_detect_anomaly(True) 
+    """
+    Train the model for one epoch.
+    
+    Args:
+        model (LSTMGNN): The model to train.
+        train_loader (DataLoader): DataLoader for training data.
+        epoch (int): Current epoch number.
+        writer (optional): Tensorboard writer for logging. Defaults to None.
+    
+    Returns:
+        tuple: (total_loss, accuracy) where:
+            - total_loss (float): Average loss across all batches.
+            - accuracy (float): Training prediction accuracy.
+    """
+    torch.autograd.set_detect_anomaly(True)
     total_loss = 0.0
     n_total_words = 0.0
     n_total_correct = 0.0
 
     print('start training: ', datetime.datetime.now())
-    # training
     model.train()
     with tqdm(total=len(train_loader)) as t:
         for step, (cascade_item, label, cascade_time, label_time, cascade_len, related_cas, related_mask) in enumerate(train_loader):
-            # related_cas_np = related_cas.detach().cpu().numpy()
             n_words = label.data.ne(Constants.PAD).sum().float().item()
             n_total_words += n_words
 
@@ -63,14 +97,10 @@ def model_training(model, train_loader, epoch, writer=None):
             if torch.isinf(loss).any():
                 print(0)
 
-            loss = loss
-
             loss.backward()
             model.optimizer.step()
             model.optimizer.update_learning_rate()
 
-
-            ### tqdm parameter
             t.set_description(desc="Epoch %i" % epoch)
             t.set_postfix(steps=step, loss=loss.data.item())
             t.update(1)
@@ -83,7 +113,20 @@ def model_training(model, train_loader, epoch, writer=None):
         return total_loss, n_total_correct/n_total_words
 
 def model_testing(model, test_loader, k_list=[10, 50, 100]):
-    ''' Epoch operation in evaluation phase '''
+    """
+    Evaluate the model on the test/validation set.
+    
+    Args:
+        model (LSTMGNN): The trained model.
+        test_loader (DataLoader): DataLoader for evaluation data.
+        k_list (list): List of K values for computing Recall@K and MAP@K.
+            Defaults to [10, 50, 100].
+    
+    Returns:
+        tuple: (scores, accuracy) where:
+            - scores (dict): Evaluation metrics including hits@k and map@k for each k.
+            - accuracy (float): Overall prediction accuracy.
+    """
     scores = {}
     for k in k_list:
         scores['hits@' + str(k)] = 0
@@ -91,7 +134,6 @@ def model_testing(model, test_loader, k_list=[10, 50, 100]):
 
     n_total_words = 0.0
     n_correct = 0.0
-    total_loss = 0.0
 
     print('start predicting: ', datetime.datetime.now())
     model.eval()
@@ -127,7 +169,20 @@ def model_testing(model, test_loader, k_list=[10, 50, 100]):
         return scores, n_correct/n_total_words
 
 def train_test(epoch, model, train_loader, val_loader, test_loader, writer=None):
-
+    """
+    Perform one full training epoch followed by evaluation on validation and test sets.
+    
+    Args:
+        epoch (int): Current epoch number.
+        model (LSTMGNN): The model to train and evaluate.
+        train_loader (DataLoader): Training data loader.
+        val_loader (DataLoader): Validation data loader.
+        test_loader (DataLoader): Test data loader.
+        writer (optional): Tensorboard writer for logging. Defaults to None.
+    
+    Returns:
+        tuple: (total_loss, val_scores, test_scores, val_accuracy, test_accuracy)
+    """
     total_loss, accuracy = model_training(model, train_loader, epoch, writer)
     val_scores, val_accuracy = model_testing(model, val_loader)
     test_scores, test_accuracy = model_testing(model, test_loader)
@@ -135,46 +190,53 @@ def train_test(epoch, model, train_loader, val_loader, test_loader, writer=None)
     return total_loss, val_scores, test_scores, val_accuracy.item(), test_accuracy.item()
 
 def main(data_path, seed=2023):
-
+    """
+    Main function that orchestrates the entire training and evaluation pipeline.
+    
+    Args:
+        data_path (str): Name of the dataset to use.
+        seed (int): Random seed for reproducibility. Defaults to 2023.
+    """
     init_seeds(seed)
 
-    # ========= Preparing DataLoader =========#
-    #### Divide training set, validation set and test set
+    # Preprocess data if requested
     if opt.preprocess:
         Split_data(data_path, train_rate=0.8, valid_rate=0.1, load_dict=False)
 
-    related_cas = related_cas_(opt.data_name, mini_seq_len=5, opt=opt) 
+    # Preprocess related cascades for memory retrieval
+    related_cas = related_cas_(opt.data_name, mini_seq_len=5, opt=opt)
 
-    #### Read training set, validation set and test set
+    # Read train, validation, and test data splits
+    train, valid, test, user_size = Read_data(data_path)
 
-    train, valid, test, user_size = Read_data(data_path)  
-    
+    # Create dataset objects
     train_data = datasets(train, opt.max_lenth, related_cas['train'], opt.window_size, opt.top_k)
     val_data = datasets(valid, opt.max_lenth, related_cas['valid'], opt.window_size, opt.top_k)
     test_data = datasets(test, opt.max_lenth, related_cas['test'], opt.window_size, opt.top_k)
 
-    #### Build DataLoader
+    # Create DataLoaders
     train_loader = DataLoader(dataset=train_data, batch_size=opt.batch_size, shuffle=True, num_workers=8)
     val_loader = DataLoader(dataset=val_data, batch_size=opt.batch_size, shuffle=False, num_workers=8)
     test_loader = DataLoader(dataset=test_data, batch_size=opt.batch_size, shuffle=False, num_workers=8)
 
-    # ========= Preparing graph and hypergraph =========#
+    # Construct graph structures
     opt.n_node = user_size
-    G = ConRelationGraph(opt.data_name)  ###social graph
-    HG_Source, HG_Item = ConHypergraph(opt.data_name, opt.n_node)  ###Item Hypergraph, Source User
+    G = ConRelationGraph(opt.data_name)  # Social friendship graph
+    HG_Source, HG_Item = ConHypergraph(opt.data_name, opt.n_node)  # Source and item hypergraphs
 
+    # Move graphs to GPU
     G = trans_to_cuda(G)
     HG_Source = trans_to_cuda(HG_Source)
     HG_Item = trans_to_cuda(HG_Item)
 
-    # ========= Early_stopping =========#
+    # Initialize early stopping
     save_model_path = opt.save_path + 'main_%s.pt' % opt.data_name
     early_stopping = EarlyStopping(patience=opt.patience, verbose=True, path=save_model_path)
 
-    # ========= Building Model =========#
-    model = trans_to_cuda(LSTMGNN(adjacency=G, hypergraphs=[HG_Source, HG_Item], args = opt, dropout=opt.dropout))
+    # Initialize model and move to GPU
+    model = trans_to_cuda(LSTMGNN(adjacency=G, hypergraphs=[HG_Source, HG_Item], args=opt, dropout=opt.dropout))
 
-    # ========= Metrics =========#
+    # Track best results
     top_K = [10, 50, 100]
     best_results = {}
     for K in top_K:
@@ -183,9 +245,11 @@ def main(data_path, seed=2023):
 
     validation_history = 0.0
 
+    # Training loop
     for epoch in range(1, opt.epoch+1):
         total_loss, val_scores, test_scores, val_accuracy, test_accuracy = train_test(epoch, model, train_loader, val_loader, test_loader, writer)
 
+        # Update best results if validation improves
         if validation_history <= sum(val_scores.values()):
             validation_history = sum(val_scores.values())
 
@@ -198,7 +262,7 @@ def main(data_path, seed=2023):
                 best_results['metric%d' % K][1] = test_scores['map@' + str(K)]
                 best_results['epoch%d' % K][1] = epoch
 
-
+            # Print current results
             print(" -validation scores:-------------------------------------")
             print('  - (validation) accuracy: {accu:3.3f} %'.format(accu=100 * val_accuracy))
             for metric in val_scores.keys():
@@ -209,32 +273,31 @@ def main(data_path, seed=2023):
 
             for K in top_K:
                 print('train_loss:\t%.4f\tRecall@%d: %.4f\tMAP@%d: %.4f\tEpoch: %d,  %d' %
-                      (total_loss, K,  best_results['metric%d' % K][0], K, best_results['metric%d' % K][1],
+                      (total_loss, K, best_results['metric%d' % K][0], K, best_results['metric%d' % K][1],
                        best_results['epoch%d' % K][0], best_results['epoch%d' % K][1]))
-            
+
+        # Check early stopping condition
         early_stopping(-sum(list(val_scores.values())), model)
         if early_stopping.early_stop:
             print("Early_Stopping")
-            break # Ensure we break out of the loop
+            break
 
-    # ========= Final score =========#
+    # Print final results
     print(" -(Finished!!) \n test scores: ")
     print("--------------------------------------------")
-    for K in top_K:
-        print('Recall@%d: %.4f\tMAP@%d: %.4f\tEpoch: %d,  %d' %
-              (K, best_results['metric%d' % K][0], K, best_results['metric%d' % K][1],
-               best_results['epoch%d' % K][0], best_results['epoch%d' % K][1]))
-
-        with open('./results/perturb_%s.txt' % opt.data_name, 'a') as f:
-            f.write('perturbation_rate: %.4f\n' % opt.train_perturbation_rate)
-            f.write('Hits@%d: %.4f\tMAP@%d: %.4f\tEpoch: %d\n' %
-            (K,  best_results['metric%d' % K][0], K, best_results['metric%d' % K][1],
+    with open('./results/perturb_%s.txt' % opt.data_name, 'a') as f:
+        f.write('perturbation_rate: %.4f\n' % getattr(opt, 'train_perturbation_rate', 0.0))
+        for K in top_K:
+            print('Recall@%d: %.4f\tMAP@%d: %.4f\tEpoch: %d,  %d' %
+                  (K, best_results['metric%d' % K][0], K, best_results['metric%d' % K][1],
+                   best_results['epoch%d' % K][0], best_results['epoch%d' % K][1]))
+            f.write('Recall@%d: %.4f\tMAP@%d: %.4f\tEpoch: %d\n' %
+            (K, best_results['metric%d' % K][0], K, best_results['metric%d' % K][1],
             best_results['epoch%d' % K][0]))
-            f.write('--------------------------------------------\n')
-
+        f.write('--------------------------------------------\n')
 
 if __name__ == "__main__":
-
+    # Compute filter sequence length based on hyperparameters
     opt.filter_seq = (opt.max_lenth - 1) * opt.window_size * opt.top_k
     print(opt)
     main(opt.data_name, seed=2025)

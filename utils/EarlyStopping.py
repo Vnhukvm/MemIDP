@@ -1,21 +1,28 @@
+"""
+Early stopping implementation for model regularization.
+Stops training when validation loss doesn't improve for a given number of epochs.
+Saves the best model checkpoint when validation loss improves.
+"""
 import numpy as np
 import torch
 
 class EarlyStopping:
-    """Early stops the training if validation loss doesn't improve after a given patience."""
+    """
+    Early stops the training if validation loss doesn't improve after a given patience.
+    Implements checkpoint saving when best performance is achieved.
+    """
     def __init__(self, patience=7, verbose=False, delta=0, path='checkpoint.pt', trace_func=print):
         """
+        Initialize EarlyStopping.
+        
         Args:
-            patience (int): How long to wait after last time validation loss improved.
-                            Default: 7
-            verbose (bool): If True, prints a message for each validation loss improvement.
-                            Default: False
-            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
-                            Default: 0
-            path (str): Path for the checkpoint to be saved to.
-                            Default: 'checkpoint.pt'
-            trace_func (function): trace print function.
-                            Default: print
+            patience (int): How many epochs to wait after last improvement before stopping.
+                Default: 7
+            verbose (bool): If True, prints progress messages. Default: False
+            delta (float): Minimum improvement required to qualify as an improvement.
+                Default: 0
+            path (str): File path to save best model checkpoint. Default: 'checkpoint.pt'
+            trace_func (function): Function to print trace messages. Default: print
         """
         self.patience = patience
         self.verbose = verbose
@@ -26,8 +33,15 @@ class EarlyStopping:
         self.delta = delta
         self.path = path
         self.trace_func = trace_func
-    def __call__(self, val_loss, model):
 
+    def __call__(self, val_loss, model):
+        """
+        Check if validation loss has improved and update early stopping state.
+        
+        Args:
+            val_loss (float): Current validation loss.
+            model (nn.Module): PyTorch model to save if improvement occurs.
+        """
         score = -val_loss
 
         if self.best_score is None:
@@ -44,7 +58,13 @@ class EarlyStopping:
             self.counter = 0
 
     def save_checkpoint(self, val_loss, model):
-        '''Saves model when validation loss decrease.'''
+        """
+        Save model checkpoint when validation loss decreases.
+        
+        Args:
+            val_loss (float): Current validation loss.
+            model (nn.Module): PyTorch model to save.
+        """
         if self.verbose:
             self.trace_func(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
         torch.save(model.state_dict(), self.path)
